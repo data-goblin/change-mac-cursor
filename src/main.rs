@@ -19,6 +19,18 @@ use std::path::Path;
 extern "C" {
     fn CGSMainConnectionID() -> i32;
 
+    // Read current cursor data: images, size, hotspot, frame info
+    fn CGSCopyRegisteredCursorImages(
+        connection: i32,
+        cursor_name: *const std::ffi::c_char,
+        size: *mut CGSize,
+        hotspot: *mut CGPoint,
+        frame_count: *mut usize,
+        frame_duration: *mut f64,
+        images: *mut core_foundation::array::CFArrayRef,
+    ) -> i32;
+
+    // Register cursor images globally
     // (connection, cursorName, setGlobally, instantly, size, hotspot, frameCount, frameDuration, images, seed)
     fn CGSRegisterCursorWithImages(
         connection: i32,
@@ -34,15 +46,6 @@ extern "C" {
     ) -> i32;
 }
 
-// Private HIServices API for resetting core cursors.
-// Part of ApplicationServices.framework (HIServices sub-framework).
-// Signatures from Mousecape's restore.m.
-#[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
-    fn CoreCursorUnregisterAll(connection: i32) -> i32;
-    fn CoreCursorSet(connection: i32, cursor_id: i32) -> i32;
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct CGSize {
@@ -56,6 +59,9 @@ struct CGPoint {
     x: f64,
     y: f64,
 }
+
+// Backup name prefix (same convention as Mousecape)
+const BACKUP_PREFIX: &str = "com.cmc.backup.";
 
 // #endregion
 
@@ -86,7 +92,7 @@ struct Args {
     #[arg(short, long, default_value = "com.apple.coregraphics.Arrow")]
     cursor: String,
 
-    /// Restore all cursors to system defaults
+    /// Restore cursor to system default (from backup)
     #[arg(short, long)]
     restore: bool,
 }
@@ -150,12 +156,168 @@ fn load_cursor_image(path: &Path, target_size: u32) -> Result<CGImage, String> {
 // #endregion
 
 
-// #region Cursor Registration
+// #region Cursor Backup & Registration
+
+/// Back up the current cursor by copying its data and re-registering
+/// under a backup name. Skips if backup already exists.
+fn backup_cursor(connection: i32, cursor_name: &str) -> Result<(), String> {
+    let backup_name = format!("{}{}", BACKUP_PREFIX, cursor_name);
+    let c_backup = CString::new(backup_name.as_str())
+        .map_err(|_| "Backup name contains null byte")?;
+    let c_name = CString::new(cursor_name)
+        .map_err(|_| "Cursor name contains null byte")?;
+
+    // Check if backup already exists by trying to read it
+    let mut size = CGSize { width: 0.0, height: 0.0 };
+    let mut hotspot = CGPoint { x: 0.0, y: 0.0 };
+    let mut frame_count: usize = 0;
+    let mut frame_duration: f64 = 0.0;
+    let mut images: core_foundation::array::CFArrayRef = std::ptr::null();
+
+    let backup_exists = unsafe {
+        CGSCopyRegisteredCursorImages(
+            connection,
+            c_backup.as_ptr(),
+            &mut size,
+            &mut hotspot,
+            &mut frame_count,
+            &mut frame_duration,
+            &mut images,
+        )
+    };
+
+    if backup_exists == 0 && !images.is_null() {
+        // Backup already exists, release and skip
+        unsafe { core_foundation::base::CFRelease(images as *const std::ffi::c_void); }
+        println!("Backup already exists, skipping.");
+        return Ok(());
+    }
+
+    // Read the current cursor data
+    let mut cur_size = CGSize { width: 0.0, height: 0.0 };
+    let mut cur_hotspot = CGPoint { x: 0.0, y: 0.0 };
+    let mut cur_frame_count: usize = 0;
+    let mut cur_frame_duration: f64 = 0.0;
+    let mut cur_images: core_foundation::array::CFArrayRef = std::ptr::null();
+
+    let read_result = unsafe {
+        CGSCopyRegisteredCursorImages(
+            connection,
+            c_name.as_ptr(),
+            &mut cur_size,
+            &mut cur_hotspot,
+            &mut cur_frame_count,
+            &mut cur_frame_duration,
+            &mut cur_images,
+        )
+    };
+
+    if read_result != 0 || cur_images.is_null() {
+        return Err(format!("Failed to read current cursor data (error: {})", read_result));
+    }
+
+    // Register the current cursor data under the backup name
+    let mut seed: i32 = 0;
+    let reg_result = unsafe {
+        CGSRegisterCursorWithImages(
+            connection,
+            c_backup.as_ptr(),
+            true,
+            true,
+            cur_size,
+            cur_hotspot,
+            cur_frame_count,
+            cur_frame_duration,
+            cur_images,
+            &mut seed,
+        )
+    };
+
+    // Release the copied images
+    unsafe { core_foundation::base::CFRelease(cur_images as *const std::ffi::c_void); }
+
+    if reg_result != 0 {
+        return Err(format!("Failed to save cursor backup (error: {})", reg_result));
+    }
+
+    println!("Backed up current cursor as '{}'", backup_name);
+    Ok(())
+}
+
+
+/// Restore cursor from backup.
+///
+/// Reads the backed-up cursor data, re-registers it under the
+/// original name, effectively replacing whatever custom cursor was set.
+fn restore_cursor(cursor_name: &str) -> Result<(), String> {
+    let connection = unsafe { CGSMainConnectionID() };
+    if connection <= 0 {
+        return Err("Failed to get CGS connection. Not running in a GUI session?".into());
+    }
+
+    let backup_name = format!("{}{}", BACKUP_PREFIX, cursor_name);
+    let c_backup = CString::new(backup_name.as_str())
+        .map_err(|_| "Backup name contains null byte")?;
+    let c_name = CString::new(cursor_name)
+        .map_err(|_| "Cursor name contains null byte")?;
+
+    // Read backup cursor data
+    let mut size = CGSize { width: 0.0, height: 0.0 };
+    let mut hotspot = CGPoint { x: 0.0, y: 0.0 };
+    let mut frame_count: usize = 0;
+    let mut frame_duration: f64 = 0.0;
+    let mut images: core_foundation::array::CFArrayRef = std::ptr::null();
+
+    let read_result = unsafe {
+        CGSCopyRegisteredCursorImages(
+            connection,
+            c_backup.as_ptr(),
+            &mut size,
+            &mut hotspot,
+            &mut frame_count,
+            &mut frame_duration,
+            &mut images,
+        )
+    };
+
+    if read_result != 0 || images.is_null() {
+        return Err(format!(
+            "No backup found for '{}'. Was the cursor changed with cmc? (Log out to reset instead.)",
+            cursor_name
+        ));
+    }
+
+    // Re-register under original name
+    let mut seed: i32 = 0;
+    let reg_result = unsafe {
+        CGSRegisterCursorWithImages(
+            connection,
+            c_name.as_ptr(),
+            true,
+            true,
+            size,
+            hotspot,
+            frame_count,
+            frame_duration,
+            images,
+            &mut seed,
+        )
+    };
+
+    // Release the copied images
+    unsafe { core_foundation::base::CFRelease(images as *const std::ffi::c_void); }
+
+    if reg_result != 0 {
+        return Err(format!("Failed to restore cursor (error: {})", reg_result));
+    }
+
+    Ok(())
+}
+
 
 /// Register a custom cursor image with the macOS WindowServer.
 ///
-/// Uses private CGS APIs to globally replace the named cursor.
-/// The replacement persists until logout/restart or until restored.
+/// Backs up the current cursor first, then replaces it.
 fn register_cursor(
     cursor_name: &str,
     image: &CGImage,
@@ -166,6 +328,9 @@ fn register_cursor(
     if connection <= 0 {
         return Err("Failed to get CGS connection. Not running in a GUI session?".into());
     }
+
+    // Backup current cursor before replacing
+    backup_cursor(connection, cursor_name)?;
 
     let c_name = CString::new(cursor_name)
         .map_err(|_| "Cursor name contains null byte")?;
@@ -211,31 +376,6 @@ fn register_cursor(
     }
 }
 
-
-/// Restore all cursors to system defaults.
-///
-/// Calls CoreCursorUnregisterAll to wipe custom registrations,
-/// then CoreCursorSet for each of the 45 core cursor IDs to
-/// force the WindowServer to reload defaults.
-fn restore_cursors() -> Result<(), String> {
-    let connection = unsafe { CGSMainConnectionID() };
-    if connection <= 0 {
-        return Err("Failed to get CGS connection. Not running in a GUI session?".into());
-    }
-
-    let result = unsafe { CoreCursorUnregisterAll(connection) };
-    if result != 0 {
-        return Err(format!("CoreCursorUnregisterAll failed (error code: {})", result));
-    }
-
-    // Re-set all 45 core cursors to force reload from defaults
-    for i in 0..45 {
-        unsafe { CoreCursorSet(connection, i); }
-    }
-
-    Ok(())
-}
-
 // #endregion
 
 
@@ -245,9 +385,10 @@ fn main() {
     let args = Args::parse();
 
     if args.restore {
-        match restore_cursors() {
+        println!("Restoring cursor: {}", args.cursor);
+        match restore_cursor(&args.cursor) {
             Ok(()) => {
-                println!("All cursors restored to system defaults.");
+                println!("Cursor restored to system default.");
             }
             Err(e) => {
                 eprintln!("{}", e);
@@ -304,7 +445,7 @@ fn main() {
     match register_cursor(&args.cursor, &cg_image, size as f64, hotspot) {
         Ok(()) => {
             println!("Cursor replaced successfully.");
-            println!("Note: resets on logout. Use `cmc --restore` to reset now.");
+            println!("Use `cmc --restore` to restore the original.");
         }
         Err(e) => {
             eprintln!("{}", e);
