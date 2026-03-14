@@ -11,6 +11,8 @@ cmc --restore                                                    # reset
 
 Example cursors from the [Warcraft II cursors](https://imgur.com/gallery/warcraft-ii-cursors-9ef8R) imgur gallery are included in `example-cursors/`.
 
+<img src="example-cursors/orc-cursor.png" width="32" height="32" alt="Orc cursor" /> <img src="example-cursors/wc2-human-gauntlet.png" width="32" height="32" alt="Human cursor" />
+
 Session-scoped (resets on logout). macOS only. Tested on Sequoia, Apple Silicon. MIT license.
 
 ---
