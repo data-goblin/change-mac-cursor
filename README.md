@@ -21,6 +21,9 @@ cmc --image cursor.png --size 48 --hotspot-x 2 --hotspot-y 2
 
 # Replace a different cursor type
 cmc --image hand.png --size 32 --cursor com.apple.coregraphics.OpenHand
+
+# Restore all cursors to system defaults
+cmc --restore
 ```
 
 ### Options
@@ -32,7 +35,7 @@ cmc --image hand.png --size 32 --cursor com.apple.coregraphics.OpenHand
 | `--hotspot-x` | 0 | Click point X offset |
 | `--hotspot-y` | 0 | Click point Y offset |
 | `-c, --cursor` | `com.apple.coregraphics.Arrow` | Cursor identifier to replace |
-| `-r, --restore` | false | Restore default cursor (not yet implemented) |
+| `-r, --restore` | | Restore all cursors to system defaults |
 
 ### Common cursor identifiers
 
@@ -64,8 +67,7 @@ The tool calls `CGSRegisterCursorWithImages`, a private CoreGraphics function th
 ## Limitations
 
 - macOS only (uses private CoreGraphics APIs)
-- Cursor resets on logout -- run again to re-apply
-- `--restore` not yet implemented (log out to reset)
+- Cursor resets on logout -- run again to re-apply, or use `cmc --restore` to reset immediately
 - Private APIs have no stability guarantee and may break on future macOS versions
 - Tested on macOS Sequoia (Darwin 24.6.0), Apple Silicon
 
