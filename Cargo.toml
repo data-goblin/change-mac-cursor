@@ -1,0 +1,16 @@
+[package]
+name = "change-mac-cursor"
+version = "0.1.0"
+edition = "2021"
+description = "Replace macOS system cursor with a custom image"
+
+[[bin]]
+name = "cmc"
+path = "src/main.rs"
+
+[dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"
+image = { version = "0.25", default-features = false, features = ["png"] }
+clap = { version = "4", features = ["derive"] }
+foreign-types = "0.5"
